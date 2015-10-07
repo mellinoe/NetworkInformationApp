@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Threading.Tasks;
 using System.Linq;
 using System.Diagnostics;
+using System.Collections;
+using System.Collections.Generic;
 
 namespace NetworkInformation.SampleUsage
 {
@@ -14,45 +16,50 @@ namespace NetworkInformation.SampleUsage
         {
             CommandLineTraceHandler.Enable();
 
-            string selection = (args?.Length >= 1) ? args[0] : null;
-            switch (selection)
+            Dictionary<string, Action> options = new Dictionary<string, Action>()
             {
-                case "networkinterfaces":
-                    PrintNetworkInterfaces();
-                    break;
-                case "ipv4":
-                    PrintIpv4Statistics();
-                    break;
-                case "ipv6":
-                    PrintIpv6Statistics();
-                    break;
-                case "networkchange":
-                    NetworkChangeTest();
-                    break;
-                case "icmp4":
-                    PrintIcmp4Statistics();
-                    break;
-                case "icmp6":
-                    PrintIcmp6Statistics();
-                    break;
-                case "udp4":
-                    PrintUdp4Statistics();
-                    break;
-                case "udp6":
-                    PrintUdp6Statistics();
-                    break;
-                case "tcp4":
-                    PrintTcp4Statistics();
-                    break;
-                case "tcp6":
-                    PrintTcp6Statistics();
-                    break;
-                case "connections":
-                    PrintSocketConnections();
-                    break;
-                default:
-                    Console.WriteLine("Invalid option.");
-                    break;
+                { "interfaces", PrintNetworkInterfaces },
+                { "interfaceproperties", PrintNetworkInterfaceProperties },
+                { "interfacestatistics", PrintNetworkInterfaceStatistics },
+                { "ipv4", PrintIpv4Statistics },
+                { "ipv6", PrintIpv6Statistics },
+                { "icmp4", PrintIcmp4Statistics },
+                { "icmp6", PrintIcmp6Statistics },
+                { "udp4", PrintUdp4Statistics },
+                { "udp6", PrintUdp6Statistics },
+                { "tcp4", PrintTcp4Statistics },
+                { "tcp6", PrintTcp6Statistics },
+                { "connections", PrintSocketConnections },
+            };
+
+            string selection = (args?.Length >= 1) ? args[0] : null;
+            if (selection == null || !options.Keys.Contains(selection))
+            {
+                Console.WriteLine("Options: " + Environment.NewLine + string.Join(Environment.NewLine, options.Keys.Select(s => $"* {s}")));
+            }
+            else
+            {
+                options[selection]();
+            }
+        }
+
+        private static void PrintNetworkInterfaceStatistics()
+        {
+            var interfaces = NetworkInterface.GetAllNetworkInterfaces();
+            foreach (NetworkInterface iface in interfaces)
+            {
+                Console.WriteLine(iface.Name);
+                PrintProperties(iface.GetIPStatistics());
+            }
+        }
+
+        private static void PrintNetworkInterfaceProperties()
+        {
+            var interfaces = NetworkInterface.GetAllNetworkInterfaces();
+            foreach (NetworkInterface iface in interfaces)
+            {
+                Console.WriteLine(iface.Name);
+                PrintProperties(iface.GetIPProperties());
             }
         }
 
@@ -136,36 +143,69 @@ namespace NetworkInformation.SampleUsage
             PrintProperties(stats);
         }
 
-        private static void PrintProperties(object obj)
+        private static void PrintProperties(object obj, int indentLevel = 2)
         {
-            foreach (PropertyInfo pi in obj.GetType().GetProperties())
+            foreach (PropertyInfo pi in obj.GetType().GetProperties().Where(pi => pi.GetIndexParameters().Length == 0))
             {
+                object retrieved = null;
                 string value;
                 try
                 {
-                    value = pi.GetValue(obj).ToString();
+                    retrieved = pi.GetValue(obj);
+                    value = retrieved.ToString();
                 }
                 catch (TargetInvocationException tie)
                 {
                     value = tie.InnerException.GetType().Name;
+                    if (tie.InnerException.GetType() != typeof(NotImplementedException) && tie.InnerException.GetType() != typeof(PlatformNotSupportedException))
+                    {
+                        value += Environment.NewLine + tie.InnerException.ToString();
+                    }
                 }
-                Console.WriteLine("  -> " + pi.Name + " = " + value);
+
+                Console.WriteLine(new string(' ', indentLevel) + pi.Name + " = " + value);
+                if (retrieved is IEnumerable<object>)
+                {
+                    Console.WriteLine(new string(' ', indentLevel) + $"[{Enumerable.Count((IEnumerable<object>)retrieved)} subvalues]");
+                    foreach (var subVal in (IEnumerable<object>)retrieved)
+                    {
+                        Console.WriteLine(new string(' ', indentLevel) + "* " + subVal.ToString());
+                        PrintProperties(subVal, indentLevel + 4);
+                    }
+                }
+                else if (retrieved != null && retrieved.GetType() != typeof(object))
+                {
+                    PrintProperties(retrieved, indentLevel + 2);
+                }
             }
             foreach (MethodInfo mi in obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
-                .Where(mi => mi.GetParameters().Length == 0 && !mi.Name.Contains("get_") && !mi.Name.Contains("set_"))
+                .Where(mi => mi.GetParameters().Length == 0 && !mi.Name.Contains("get_") && !mi.Name.Contains("set_")
+                        && !mi.Name.Contains("ToString") && !mi.Name.Contains("GetHashCode") && !mi.Name.Contains("GetTypeCode"))
                 .Where(mi => mi.DeclaringType != typeof(object)))
             {
+                object retrieved = null;
                 string value;
                 try
                 {
-                    value = mi.Invoke(obj, null).ToString();
+                    retrieved = mi.Invoke(obj, null);
+                    value = retrieved.ToString();
                 }
                 catch (TargetInvocationException tie)
                 {
+
                     value = tie.InnerException.GetType().Name;
                 }
 
-                Console.WriteLine("  -> " + mi.Name + "() = " + value);
+                Console.WriteLine(new string(' ', indentLevel) + mi.Name + "() = " + value);
+                if (retrieved is IEnumerable<object>)
+                {
+                    Console.WriteLine(new string(' ', indentLevel) + $"[{Enumerable.Count((IEnumerable<object>)retrieved)} subvalues]");
+                    foreach (var subVal in (IEnumerable<object>)retrieved)
+                    {
+                        Console.WriteLine(new string(' ', indentLevel) + "* " + subVal.ToString());
+                        PrintProperties(subVal, indentLevel + 4);
+                    }
+                }
             }
         }
 
@@ -206,6 +246,25 @@ namespace NetworkInformation.SampleUsage
             }
             catch { }
             return address.ToString();
+        }
+    }
+
+    // Doesn't work on Linux.
+    public struct ColoredRegion : IDisposable
+    {
+        private ConsoleColor _previousColor;
+
+        public static ColoredRegion Begin(ConsoleColor color)
+        {
+            ColoredRegion region;
+            region._previousColor = Console.ForegroundColor;
+            Console.ForegroundColor = color;
+            return region;
+        }
+
+        public void Dispose()
+        {
+            Console.ForegroundColor = _previousColor;
         }
     }
 }

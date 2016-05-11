@@ -14,8 +14,6 @@ namespace NetworkInformation.SampleUsage
     {
         public static void Main(string[] args)
         {
-            CommandLineTraceHandler.Enable();
-
             Dictionary<string, Action> options = new Dictionary<string, Action>()
             {
                 { "interfaces", PrintNetworkInterfaces },

@@ -4,8 +4,6 @@ using System.Net.NetworkInformation;
 using System.Reflection;
 using System.Threading.Tasks;
 using System.Linq;
-using System.Diagnostics;
-using System.Collections;
 using System.Collections.Generic;
 
 namespace NetworkInformation.SampleUsage
@@ -30,6 +28,8 @@ namespace NetworkInformation.SampleUsage
                 { "tcp4", PrintTcp4Statistics },
                 { "tcp6", PrintTcp6Statistics },
                 { "connections", PrintSocketConnections },
+                { "networkchange", NetworkChangeTest },
+                { "ipglobal", PrintIPGlobals }
             };
 
             string selection = (args?.Length >= 1) ? args[0] : null;
@@ -40,6 +40,20 @@ namespace NetworkInformation.SampleUsage
             else
             {
                 options[selection]();
+            }
+        }
+
+        private static void PrintIPGlobals()
+        {
+            var globalProps = IPGlobalProperties.GetIPGlobalProperties();
+            Console.WriteLine($"Domain Name: {globalProps.DomainName}");
+            Console.WriteLine($"Host Name: {globalProps.HostName}");
+            var addresses = globalProps.GetUnicastAddressesAsync().Result;
+            Console.WriteLine($"Async result, UnicastAddresses [{addresses.Count}]");
+            foreach (var addr in addresses)
+            {
+                Console.WriteLine("  * " + addr.Address.ToString());
+                PrintProperties(addr, 6);
             }
         }
 
@@ -58,8 +72,13 @@ namespace NetworkInformation.SampleUsage
             var interfaces = NetworkInterface.GetAllNetworkInterfaces();
             foreach (NetworkInterface iface in interfaces)
             {
-                Console.WriteLine(iface.Name);
-                PrintProperties(iface.GetIPProperties());
+                var props = iface.GetIPProperties();
+                Console.WriteLine("Interface properties: " + iface.Name);
+                PrintProperties(props);
+                Console.WriteLine("--IPv4 Properties--");
+                PrintProperties(props.GetIPv4Properties(), 4);
+                Console.WriteLine("--IPv6 Properties--");
+                PrintProperties(props.GetIPv6Properties(), 4);
             }
         }
 
@@ -145,66 +164,87 @@ namespace NetworkInformation.SampleUsage
 
         private static void PrintProperties(object obj, int indentLevel = 2)
         {
-            foreach (PropertyInfo pi in obj.GetType().GetProperties().Where(pi => pi.GetIndexParameters().Length == 0))
+            foreach (PropertyInfo pi in obj.GetType().GetProperties().Where(pi => pi.GetIndexParameters().Length == 0)
+                .Where(pi => pi.Name != "SyncRoot"))
             {
-                object retrieved = null;
-                string value;
                 try
                 {
-                    retrieved = pi.GetValue(obj);
-                    value = retrieved.ToString();
-                }
-                catch (TargetInvocationException tie)
-                {
-                    value = tie.InnerException.GetType().Name;
-                    if (tie.InnerException.GetType() != typeof(NotImplementedException) && tie.InnerException.GetType() != typeof(PlatformNotSupportedException))
+                    object retrieved = null;
+                    string value;
+                    try
                     {
-                        value += Environment.NewLine + tie.InnerException.ToString();
+                        retrieved = pi.GetValue(obj);
+                        value = retrieved.ToString();
                     }
-                }
+                    catch (TargetInvocationException tie)
+                    {
+                        value = tie.InnerException.GetType().Name;
+                    }
+                    catch (Exception e)
+                    {
+                        value = (new string(' ', indentLevel) + "**Encountered a non-TargetInvocationException**");
+                        value += Environment.NewLine + e.ToString();
+                    }
 
-                Console.WriteLine(new string(' ', indentLevel) + pi.Name + " = " + value);
-                if (retrieved is IEnumerable<object>)
-                {
-                    Console.WriteLine(new string(' ', indentLevel) + $"[{Enumerable.Count((IEnumerable<object>)retrieved)} subvalues]");
-                    foreach (var subVal in (IEnumerable<object>)retrieved)
+                    Console.WriteLine(new string(' ', indentLevel) + pi.Name + " = " + value);
+                    if (retrieved is IEnumerable<object> && !(retrieved is IPAddressCollection) && !(retrieved is string) && !(retrieved is char[]))
                     {
-                        Console.WriteLine(new string(' ', indentLevel) + "* " + subVal.ToString());
-                        PrintProperties(subVal, indentLevel + 4);
+                        Console.WriteLine(new string(' ', indentLevel) + $"[{Enumerable.Count((IEnumerable<object>)retrieved)} subvalues]");
+                        foreach (var subVal in (IEnumerable<object>)retrieved)
+                        {
+                            Console.WriteLine(new string(' ', indentLevel) + "* " + subVal.ToString());
+                            PrintProperties(subVal, indentLevel + 4);
+                        }
+                    }
+                    else if (retrieved != null && retrieved.GetType() != typeof(object))
+                    {
+                        PrintProperties(retrieved, indentLevel + 2);
                     }
                 }
-                else if (retrieved != null && retrieved.GetType() != typeof(object))
+                catch (Exception e)
                 {
-                    PrintProperties(retrieved, indentLevel + 2);
+                    Console.WriteLine(new string(' ', indentLevel) + pi.Name + "::" + e.GetType().Name);
                 }
             }
             foreach (MethodInfo mi in obj.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
                 .Where(mi => mi.GetParameters().Length == 0 && !mi.Name.Contains("get_") && !mi.Name.Contains("set_")
-                        && !mi.Name.Contains("ToString") && !mi.Name.Contains("GetHashCode") && !mi.Name.Contains("GetTypeCode"))
+                        && !mi.Name.Contains("ToString") && !mi.Name.Contains("GetHashCode") && !mi.Name.Contains("GetTypeCode")
+                        && !mi.Name.Contains("ToCharArray") && mi.DeclaringType != typeof(string) && !mi.Name.Contains("Clone")
+                        && !mi.Name.Contains("GetEnumerator") && !mi.Name.Contains("GetAddressBytes") && !mi.Name.Contains("MapToIP"))
                 .Where(mi => mi.DeclaringType != typeof(object)))
             {
-                object retrieved = null;
-                string value;
                 try
                 {
-                    retrieved = mi.Invoke(obj, null);
-                    value = retrieved.ToString();
-                }
-                catch (TargetInvocationException tie)
-                {
-
-                    value = tie.InnerException.GetType().Name;
-                }
-
-                Console.WriteLine(new string(' ', indentLevel) + mi.Name + "() = " + value);
-                if (retrieved is IEnumerable<object>)
-                {
-                    Console.WriteLine(new string(' ', indentLevel) + $"[{Enumerable.Count((IEnumerable<object>)retrieved)} subvalues]");
-                    foreach (var subVal in (IEnumerable<object>)retrieved)
+                    object retrieved = null;
+                    string value;
+                    try
                     {
-                        Console.WriteLine(new string(' ', indentLevel) + "* " + subVal.ToString());
-                        PrintProperties(subVal, indentLevel + 4);
+                        retrieved = mi.Invoke(obj, null);
+                        value = retrieved.ToString();
                     }
+                    catch (TargetInvocationException tie)
+                    {
+                        value = tie.InnerException.GetType().Name;
+                    }
+
+                    Console.WriteLine(new string(' ', indentLevel) + mi.Name + "() = " + value);
+                    if (retrieved is IEnumerable<object> && !(retrieved is IPAddressCollection) && !(retrieved is string))
+                    {
+                        Console.WriteLine(new string(' ', indentLevel) + $"[{Enumerable.Count((IEnumerable<object>)retrieved)} subvalues]");
+                        foreach (var subVal in (IEnumerable<object>)retrieved)
+                        {
+                            Console.WriteLine(new string(' ', indentLevel) + "* " + subVal.ToString());
+                            PrintProperties(subVal, indentLevel + 4);
+                        }
+                    }
+                    else if (retrieved != null && retrieved.GetType() != typeof(object))
+                    {
+                        PrintProperties(retrieved, indentLevel + 2);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(new string(' ', indentLevel) + mi.Name + "::" + e.GetType().Name);
                 }
             }
         }
@@ -214,19 +254,19 @@ namespace NetworkInformation.SampleUsage
             var interfaces = NetworkInterface.GetAllNetworkInterfaces();
             foreach (var netInterface in interfaces)
             {
-                Console.WriteLine("Interface: " + netInterface.Name);
+                Console.WriteLine("** Interface: " + netInterface.Name + " **");
                 PrintProperties(netInterface);
-                Console.WriteLine(" >IP Statistics");
-                PrintProperties(netInterface.GetIPStatistics());
             }
         }
 
         private static void NetworkChangeTest()
         {
-            Console.WriteLine("Waiting for a Network Connectivity change, press any key to continue...");
+            Console.WriteLine("Waiting for a Network Address or Connectivity change, press enter to continue...");
             NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
             Console.Read();
             NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
+            Console.WriteLine("No longer listening for changes. Press enter to exit.");
+            Console.Read();
         }
 
         private static void OnNetworkAddressChanged(object sender, EventArgs e)
